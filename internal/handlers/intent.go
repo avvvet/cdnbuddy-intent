@@ -70,9 +70,11 @@ func (h *IntentHandler) validateRequest(request *models.IntentRequest) error {
 	if request.UserMessage == "" {
 		return fmt.Errorf("user_message is required")
 	}
+	/* on request we don't need action for now
 	if len(request.AvailableActions) == 0 {
 		return fmt.Errorf("available_actions is required")
 	}
+	*/
 	return nil
 }
 

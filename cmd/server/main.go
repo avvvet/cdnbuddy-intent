@@ -20,7 +20,6 @@ func main() {
 	}
 
 	log.Println("Starting CDNbuddy Intent Service...")
-	log.Println("Starting CDNbuddy Intent Service...")
 
 	// Load configuration
 	cfg := config.Load()
