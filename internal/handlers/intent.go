@@ -26,6 +26,27 @@ func (h *IntentHandler) ProcessIntent(ctx context.Context, request *models.Inten
 		return h.createErrorResponse(request, models.ErrorParseError, err.Error()), nil
 	}
 
+	// Call LLM provider - this will now use AnthropicProvider.AnalyzeIntent
+	response, err := h.provider.AnalyzeIntent(ctx, request)
+	if err != nil {
+		return h.createErrorResponse(request, models.ErrorLLMFailed, err.Error()), nil
+	}
+
+	// Validate and clean response
+	h.validateAndCleanResponse(response)
+
+	log.Printf("Intent processed for session %s: action=%v, status=%s",
+		request.SessionID, response.Action, response.Status)
+
+	return response, nil
+}
+
+func (h *IntentHandler) ProcessIntentold(ctx context.Context, request *models.IntentRequest) (*models.IntentResponse, error) {
+	// Validate request
+	if err := h.validateRequest(request); err != nil {
+		return h.createErrorResponse(request, models.ErrorParseError, err.Error()), nil
+	}
+
 	// Build prompt
 	prompt := prompts.BuildIntentPrompt(request)
 	log.Printf("Built prompt for session %s", request.SessionID)
