@@ -10,14 +10,16 @@ import (
 	"strings"
 	"time"
 
+	"github.com/avvvet/cdnbuddy-intent/internal/memory"
 	"github.com/avvvet/cdnbuddy-intent/internal/models"
 )
 
 type AnthropicProvider struct {
-	apiKey  string
-	model   string
-	timeout time.Duration
-	client  *http.Client
+	apiKey        string
+	model         string
+	timeout       time.Duration
+	client        *http.Client
+	memoryManager *memory.Manager
 }
 
 // AnthropicRequest represents the request structure for Anthropic's API
@@ -57,11 +59,12 @@ type AnthropicError struct {
 	Message string `json:"message"`
 }
 
-func NewAnthropicProvider(apiKey, model string, timeout time.Duration) *AnthropicProvider {
+func NewAnthropicProvider(apiKey, model string, timeout time.Duration, memoryManager *memory.Manager) *AnthropicProvider {
 	return &AnthropicProvider{
-		apiKey:  apiKey,
-		model:   model,
-		timeout: timeout,
+		apiKey:        apiKey,
+		model:         model,
+		timeout:       timeout,
+		memoryManager: memoryManager,
 		client: &http.Client{
 			Timeout: timeout,
 		},
@@ -70,10 +73,26 @@ func NewAnthropicProvider(apiKey, model string, timeout time.Duration) *Anthropi
 
 // AnalyzeIntent implements the LLMProvider interface
 func (a *AnthropicProvider) AnalyzeIntent(ctx context.Context, request *models.IntentRequest) (*models.IntentResponse, error) {
-	// Build the prompt using your existing logic
-	prompt := a.buildPrompt(request)
+	// Step 1: Save user message to Redis
+	userID := "user_" + request.SessionID // Default user ID (can be improved later)
+	if err := a.memoryManager.SaveUserMessage(ctx, request.SessionID, userID, request.UserMessage); err != nil {
+		fmt.Printf("⚠️ Warning: Failed to save user message to Redis: %v\n", err)
+		// Continue anyway - we can still process without saving
+	}
 
-	// Create a single message with the full prompt
+	// Step 2: Load conversation history from Redis
+	formattedHistory, err := a.memoryManager.GetFormattedHistory(ctx, request.SessionID)
+	if err != nil {
+		fmt.Printf("⚠️ Warning: Failed to load history from Redis: %v\n", err)
+		formattedHistory = "No previous conversation."
+	}
+
+	fmt.Printf("📚 Loaded conversation history for session %s:\n%s\n", request.SessionID, formattedHistory)
+
+	// Step 3: Build the prompt using history from Redis
+	prompt := a.buildPromptWithHistory(request, formattedHistory)
+
+	// Step 4: Create a single message with the full prompt
 	messages := []AnthropicMessage{
 		{
 			Role:    "user",
@@ -81,13 +100,12 @@ func (a *AnthropicProvider) AnalyzeIntent(ctx context.Context, request *models.I
 		},
 	}
 
-	// Prepare the request body
+	// Step 5: Prepare the request body
 	anthropicReq := AnthropicRequest{
 		Model:       a.model,
 		MaxTokens:   1000,
 		Temperature: 0.1, // Low temperature for consistent responses
 		Messages:    messages,
-		// Remove System field entirely to match curl example
 	}
 
 	// Marshal the request
@@ -96,12 +114,9 @@ func (a *AnthropicProvider) AnalyzeIntent(ctx context.Context, request *models.I
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	// Debug logging - remove this after fixing
-	fmt.Printf("Request body: %s\n", string(reqBody))
-	fmt.Printf("Model: %s\n", a.model)
-	fmt.Printf("API Key length: %d\n", len(a.apiKey))
+	fmt.Printf("🤖 Calling Claude API for session: %s\n", request.SessionID)
 
-	// Create HTTP request
+	// Step 6: Create HTTP request
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", "https://api.anthropic.com/v1/messages", bytes.NewBuffer(reqBody))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create HTTP request: %w", err)
@@ -112,7 +127,7 @@ func (a *AnthropicProvider) AnalyzeIntent(ctx context.Context, request *models.I
 	httpReq.Header.Set("x-api-key", a.apiKey)
 	httpReq.Header.Set("anthropic-version", "2023-06-01")
 
-	// Make the request
+	// Step 7: Make the request
 	resp, err := a.client.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("failed to make HTTP request: %w", err)
@@ -127,8 +142,7 @@ func (a *AnthropicProvider) AnalyzeIntent(ctx context.Context, request *models.I
 
 	// Handle non-200 responses
 	if resp.StatusCode != http.StatusOK {
-		// Debug logging - remove this after fixing
-		fmt.Printf("Error response body: %s\n", string(body))
+		fmt.Printf("❌ Error response body: %s\n", string(body))
 
 		var anthropicErr AnthropicError
 		if err := json.Unmarshal(body, &anthropicErr); err != nil {
@@ -137,7 +151,7 @@ func (a *AnthropicProvider) AnalyzeIntent(ctx context.Context, request *models.I
 		return nil, fmt.Errorf("anthropic API error: %s", anthropicErr.Message)
 	}
 
-	// Parse response
+	// Step 8: Parse response
 	var anthropicResp AnthropicResponse
 	if err := json.Unmarshal(body, &anthropicResp); err != nil {
 		return nil, fmt.Errorf("failed to parse response: %w", err)
@@ -149,7 +163,9 @@ func (a *AnthropicProvider) AnalyzeIntent(ctx context.Context, request *models.I
 		content = anthropicResp.Content[0].Text
 	}
 
-	// Parse the LLM response using your existing parsing logic
+	fmt.Printf("✅ Claude response received: %d characters\n", len(content))
+
+	// Step 9: Parse the LLM response
 	intentResponse, err := a.parseIntentResponse(content)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse intent response: %w", err)
@@ -158,18 +174,22 @@ func (a *AnthropicProvider) AnalyzeIntent(ctx context.Context, request *models.I
 	// Set session ID
 	intentResponse.SessionID = request.SessionID
 
+	// Step 10: Save assistant response to Redis
+	if intentResponse.UserMessage != "" {
+		if err := a.memoryManager.SaveAssistantMessage(ctx, request.SessionID, userID, intentResponse.UserMessage); err != nil {
+			fmt.Printf("⚠️ Warning: Failed to save assistant message to Redis: %v\n", err)
+			// Continue anyway
+		}
+	}
+
 	return intentResponse, nil
 }
 
-// buildPrompt creates the full prompt using your existing prompts package logic
-func (a *AnthropicProvider) buildPrompt(request *models.IntentRequest) string {
+// buildPromptWithHistory creates the full prompt using conversation history from Redis
+func (a *AnthropicProvider) buildPromptWithHistory(request *models.IntentRequest, formattedHistory string) string {
 	// Build available actions section
 	actionsSection := a.buildActionsSection(request.AvailableActions)
 
-	// Build conversation section
-	conversationSection := a.buildConversationSection(request.ConversationHistory, request.UserMessage)
-
-	// Use your existing SystemPrompt format from prompts package
 	const SystemPrompt = `You are an AI assistant for CDNbuddy, a CDN management platform. Your job is to analyze user conversations and determine what CDN-related actions they want to perform.
 
 IMPORTANT RULES:
@@ -178,6 +198,7 @@ IMPORTANT RULES:
 3. Extract parameters from the conversation for the selected action
 4. If you need more information, ask specific questions
 5. When an action is complete, you can ask "Do you have any other requirements?"
+6. IMPORTANT: Review the ENTIRE conversation history before responding - don't ask for information already provided
 
 RESPONSE FORMAT:
 You must respond with a valid JSON object in this exact format:
@@ -193,12 +214,14 @@ You must respond with a valid JSON object in this exact format:
 Available Actions:
 %s
 
-Current Conversation:
+Conversation History:
 %s
 
-Analyze the conversation and respond with the JSON format above.`
+Current User Message: %s
 
-	return fmt.Sprintf(SystemPrompt, actionsSection, conversationSection)
+Analyze the FULL conversation history above and respond with the JSON format. Remember to check what information was already provided in previous messages.`
+
+	return fmt.Sprintf(SystemPrompt, actionsSection, formattedHistory, request.UserMessage)
 }
 
 func (a *AnthropicProvider) buildActionsSection(actions []models.ActionSchema) string {
@@ -211,23 +234,9 @@ func (a *AnthropicProvider) buildActionsSection(actions []models.ActionSchema) s
 	return builder.String()
 }
 
-func (a *AnthropicProvider) buildConversationSection(history []models.ConversationMessage, currentMessage string) string {
-	var builder strings.Builder
-
-	// Add conversation history
-	for _, msg := range history {
-		builder.WriteString(fmt.Sprintf("%s: %s\n", strings.Title(msg.Role), msg.Message))
-	}
-
-	// Add current user message
-	builder.WriteString(fmt.Sprintf("User: %s\n", currentMessage))
-
-	return builder.String()
-}
-
 // parseIntentResponse parses the JSON response from the LLM into an IntentResponse
 func (a *AnthropicProvider) parseIntentResponse(content string) (*models.IntentResponse, error) {
-	// Use your existing JSON extraction logic from prompts package
+
 	jsonContent := a.extractJSON(content)
 	if jsonContent == "" {
 		return nil, fmt.Errorf("no valid JSON found in response")
@@ -238,7 +247,6 @@ func (a *AnthropicProvider) parseIntentResponse(content string) (*models.IntentR
 		return nil, fmt.Errorf("failed to parse JSON: %w", err)
 	}
 
-	// Validate required fields using your existing fallback logic
 	if response.Status == "" {
 		response.Status = models.StatusError
 		response.UserMessage = "I didn't understand your request clearly. Could you please rephrase what you'd like me to help you with regarding CDN setup or management?"
