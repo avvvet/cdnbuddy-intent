@@ -41,49 +41,6 @@ func (h *IntentHandler) ProcessIntent(ctx context.Context, request *models.Inten
 	return response, nil
 }
 
-func (h *IntentHandler) ProcessIntentold(ctx context.Context, request *models.IntentRequest) (*models.IntentResponse, error) {
-	// Validate request
-	if err := h.validateRequest(request); err != nil {
-		return h.createErrorResponse(request, models.ErrorParseError, err.Error()), nil
-	}
-
-	// Build prompt
-	prompt := prompts.BuildIntentPrompt(request)
-	log.Printf("Built prompt for session %s", request.SessionID)
-
-	// Create LLM request
-	llmRequest := &llm.LLMRequest{
-		Prompt:              prompt,
-		ConversationHistory: request.ConversationHistory,
-		MaxTokens:           1000,
-		Temperature:         0.1, // Low temperature for consistent responses
-	}
-
-	// Call LLM provider
-	llmResponse, err := h.callLLM(ctx, llmRequest)
-	if err != nil {
-		return h.createErrorResponse(request, models.ErrorLLMFailed, err.Error()), nil
-	}
-
-	// Parse LLM response
-	response, err := prompts.ParseLLMResponse(llmResponse.Content)
-	if err != nil {
-		log.Printf("Failed to parse LLM response: %v", err)
-		return h.createErrorResponse(request, models.ErrorParseError, "Failed to understand response"), nil
-	}
-
-	// Set session ID
-	response.SessionID = request.SessionID
-
-	// Validate and clean response
-	h.validateAndCleanResponse(response)
-
-	log.Printf("Intent processed for session %s: action=%v, status=%s",
-		request.SessionID, response.Action, response.Status)
-
-	return response, nil
-}
-
 func (h *IntentHandler) validateRequest(request *models.IntentRequest) error {
 	if request.SessionID == "" {
 		return fmt.Errorf("session_id is required")

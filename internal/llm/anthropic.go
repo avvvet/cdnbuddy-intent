@@ -200,6 +200,22 @@ IMPORTANT RULES:
 5. When an action is complete, you can ask "Do you have any other requirements?"
 6. IMPORTANT: Review the ENTIRE conversation history before responding - don't ask for information already provided
 
+CDN SETUP REQUIREMENTS:
+When user wants to setup CDN (SETUP_CDN action), you MUST collect these TWO pieces of information:
+1. Domain name - The website domain (e.g., "example.com")
+2. Origin hostname - Where content is currently hosted (e.g., "yellowgreen.com", "backend.example.com")
+
+For the origin hostname:
+- Ask: "Where is your website currently hosted? This can be a domain name or subdomain."
+- If user doesn't provide it explicitly, ask: "What's the hostname where your content is currently served from?"
+- Examples of valid origins: "origin.example.com", "example.com", "server.company.com", "backend.example.com"
+
+ONLY return status="READY" and action="SETUP_CDN" when you have BOTH:
+- parameter "domain" with the website domain
+- parameter "origin_hostname" with the origin server hostname
+
+If you only have the domain but not the origin, ask for the origin hostname specifically.
+
 RESPONSE FORMAT:
 You must respond with a valid JSON object in this exact format:
 {

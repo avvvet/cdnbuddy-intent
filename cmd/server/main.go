@@ -24,7 +24,6 @@ func main() {
 	log.Println("🚀 Starting CDNbuddy Intent Service...")
 
 	// Load configuration
-	// Load configuration
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("❌ Failed to load config: %v", err)
@@ -63,7 +62,7 @@ func main() {
 		cfg.AnthropicAPIKey,
 		cfg.AnthropicModel,
 		cfg.AnthropicTimeout,
-		memoryManager, // Pass memory manager here
+		memoryManager,
 	)
 	log.Println("✅ Anthropic provider initialized")
 
